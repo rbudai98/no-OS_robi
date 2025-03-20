@@ -37,60 +37,150 @@
 #include "common_data.h"
 #include "no_os_util.h"
 
+#include <stdint.h>
+#include <stdio.h>
+
+#include "no_os_delay.h"
+
+#include "no_os_i2c.h"
+#include "maxim_i2c.h"
+
+#include "display.h"
+#include "ssd_1306.h"
+
+
+#include "lvgl.h"
+
+// STDIO UART
+
+#define INTC_DEVICE_ID	0
+#define UART_DEVICE_ID	0
+#define UART_BAUDRATE	115200
+#define UART_IRQ_ID    	UART0_IRQn
+#define UART_EXTRA      &demo_uart_extra_ip
+#define UART_OPS        &max_uart_ops
+
+struct no_os_uart_desc *demo_uart_desc;
+
+struct max_uart_init_param demo_uart_extra_ip = {
+	.flow = UART_FLOW_DIS
+};
+
+struct no_os_uart_init_param demo_uart_ip = {
+	.device_id = UART_DEVICE_ID,
+	.irq_id = UART_IRQ_ID,
+	.asynchronous_rx = true,
+	.baud_rate = UART_BAUDRATE,
+	.size = NO_OS_UART_CS_8,
+	.parity = NO_OS_UART_PAR_NO,
+	.stop = NO_OS_UART_STOP_1_BIT,
+	.extra = UART_EXTRA,
+	.platform_ops = UART_OPS,
+};
+
+// SSD1306 setup
+
+struct display_dev *oled_display;
+struct no_os_i2c_desc *oled_display_i2c_desc;
+
+struct max_i2c_init_param oled_display_i2c_maxim_extra_param = {
+	.vssel = MXC_GPIO_VSSEL_VDDIOH
+};
+
+struct no_os_i2c_init_param oled_display_i2c_init_param = {
+	.device_id = 1,
+	.max_speed_hz = 200000,
+	.slave_address = SSD1306_I2C_ADDR,
+	.platform_ops = &max_i2c_ops,
+	.extra = &oled_display_i2c_maxim_extra_param,
+};
+
 /***************************************************************************//**
  * @brief IIO example main execution.
  *
  * @return ret - Result of the example execution. If working correctly, will
- *               execute continuously function iio_app_run and will not return.
+ *               execute continuously function app_run and will not return.
 *******************************************************************************/
 int iio_example_main()
 {
-	int32_t status;
+	int ret;
 
-	/* adc instance descriptor. */
-	struct adc_demo_desc *adc_desc;
+	// Init stdio
+	ret = no_os_uart_init(&demo_uart_desc, &demo_uart_ip);
+	if (ret)
+		return 0;
 
-	/* dac instance descriptor. */
-	struct dac_demo_desc *dac_desc;
+	no_os_uart_stdio(demo_uart_desc);
 
-	/* IIO application descriptor. */
-	struct iio_app_desc *app;
+	printf("\n\r\n\r###############\n\r\n\r");
+	printf("Starting firmware...\n\r");
 
-	/* IIO application initialization parameters. */
-	struct iio_app_init_param app_init_param = { 0 };
+	lv_init();
 
-	struct iio_data_buffer adc_buff = {
-		.buff = (void *)ADC_DDR_BASEADDR,
-		.size = MAX_SIZE_BASE_ADDR
+	// init i2c
+	ret = no_os_i2c_init(&oled_display_i2c_desc, &oled_display_i2c_init_param);
+	if (ret) {
+		printf("Failed to initialize I2C.\n\r");
+		return 0;
+	}
+
+	ssd_1306_extra oled_display_extra = {
+		.comm_type = SSD1306_I2C,
+		.i2c_desc = oled_display_i2c_desc,
+		.i2c_ip = &oled_display_i2c_init_param,
 	};
 
-	struct iio_data_buffer dac_buff = {
-		.buff = (void *)DAC_DDR_BASEADDR,
-		.size = MAX_SIZE_BASE_ADDR
+	struct display_init_param oled_display_ini_param = {
+		.cols_nb = 128,
+		.rows_nb = 64,
+		.controller_ops = &ssd1306_ops,
+		.extra = &oled_display_extra,
 	};
 
-	status = adc_demo_init(&adc_desc, &adc_init_par);
-	if (status)
-		return status;
+	ret = display_init(&oled_display, &oled_display_ini_param);
+	if (ret) {
+		printf("Failed to initialize display.\n\r");
+		return 0;
+	}
+	printf("Display initialized.\n\r");
 
-	status = dac_demo_init(&dac_desc, &dac_init_par);
-	if (status)
-		return status;
+	ret = ssd_1306_display_on_off(oled_display, 1);
+	if (ret) {
+		printf("Failed to turn display on.\n\r");
+		return 0;
+	}
+	printf("Display set ON.\n\r");
 
-	struct iio_app_device devices[] = {
-		IIO_APP_DEVICE("adc_demo", adc_desc,
-			       &adc_demo_iio_descriptor, &adc_buff, NULL, NULL),
-		IIO_APP_DEVICE("dac_demo", dac_desc,
-			       &dac_demo_iio_descriptor, NULL, &dac_buff, NULL)
-	};
 
-	app_init_param.devices = devices;
-	app_init_param.nb_devices = NO_OS_ARRAY_SIZE(devices);
-	app_init_param.uart_init_params = iio_demo_uart_ip;
+	while (1) {
+		for (int num = '0'; num <= '9'; num++) {
+			ret = ssd_1306_move_cursor(oled_display, 0, 0);
+			if (ret) {
+				printf("Failed to move cursor on display.\n\r");
+				return 0;
+			}
+			for (int column_nr = 0; column_nr < 127; column_nr++) {
+				for (int page_Addr = 0; page_Addr < 7; page_Addr++) {
+					ret = ssd_1306_print_ascii(oled_display, num, page_Addr, column_nr);
+					// no_os_udelay(100U);
+					if (ret) {
+						printf("Failed to print character on display.\n\r");
+						return 0;
+					}
+					printf("%c", num);
+				}
+			}
+			no_os_mdelay(1000U);
+		}
 
-	status = iio_app_init(&app, app_init_param);
-	if (status)
-		return status;
+	}
 
-	return iio_app_run(app);
+	// while(1) {
+	// Do something
+	printf("Hello world!\n\r");
+	printf("Maxim SysTick Counter: %lu\n\r", MXC_TMR_GetCount(MXC_TMR0));
+	no_os_mdelay(60);
+	// }
+	return 0;
+
 }
